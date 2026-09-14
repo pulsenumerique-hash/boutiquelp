@@ -1,0 +1,587 @@
+import React, { useState, useMemo } from 'react';
+import {
+  PackagePlus,
+  X,
+  AlertTriangle,
+  CheckCircle2,
+  Boxes,
+  ArrowRight,
+  Wallet,
+  ShieldAlert,
+  Tag,
+} from 'lucide-react';
+import { Product } from '../../types';
+import { useApp } from '../../context/AppContext';
+import { useAuth } from '../../context/AuthContext';
+import { formatCurrency } from '../../lib/formatters';
+import {
+  isPackProduct,
+  getItemsPerPack,
+  getProductStockBreakdown,
+  calculateTotalArticlesFromPacks,
+} from '../../lib/packaging';
+
+interface QuickRestockModalProps {
+  product: Product;
+  onClose: () => void;
+  onSuccess?: () => void;
+}
+
+export const QuickRestockModal: React.FC<QuickRestockModalProps> = ({
+  product,
+  onClose,
+  onSuccess,
+}) => {
+  const { stats, updateProduct, createWithdrawal, createAuditLog } = useApp();
+  const { user } = useAuth();
+
+  const isPack = isPackProduct(product);
+  const itemsPerPack = getItemsPerPack(product);
+  const threshold = product.min_alert_threshold ?? 10;
+  const currentBreakdown = getProductStockBreakdown(product);
+
+  // Recommandation pour dépasser le seuil de sécurité
+  const recommendedCount = useMemo(() => {
+    const deficit = Math.max(0, threshold - product.unit_stock);
+    if (isPack) {
+      const pkgs = Math.ceil((deficit + itemsPerPack) / itemsPerPack);
+      return Math.max(1, pkgs);
+    }
+    return Math.max(1, deficit + 5);
+  }, [threshold, product.unit_stock, isPack, itemsPerPack]);
+
+  // Form states
+  const [packagesToAdd, setPackagesToAdd] = useState<number | ''>(isPack ? recommendedCount : '');
+  const [articlesToAdd, setArticlesToAdd] = useState<number | ''>(!isPack ? recommendedCount : '');
+  const [packagePurchasePrice, setPackagePurchasePrice] = useState<number | ''>(
+    product.package_purchase_price || (isPack ? product.unit_purchase_price * itemsPerPack : 0)
+  );
+  const [unitPurchasePriceInput, setUnitPurchasePriceInput] = useState<number | ''>(
+    product.unit_purchase_price || 0
+  );
+  const [extraUnitsToAdd, setExtraUnitsToAdd] = useState<number | ''>(0);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Computations
+  const numPkgs = Number(packagesToAdd) || 0;
+  const numArticles = Number(articlesToAdd) || 0;
+  const numExtraUnits = Number(extraUnitsToAdd) || 0;
+  const numPkgPrice = Number(packagePurchasePrice) || 0;
+  const numArticleUnitPrice = Number(unitPurchasePriceInput) || 0;
+
+  // Total d'articles ajoutés
+  const totalUnitsAdded = useMemo(() => {
+    if (isPack) {
+      return calculateTotalArticlesFromPacks(numPkgs, itemsPerPack, numExtraUnits);
+    }
+    return numArticles;
+  }, [isPack, numPkgs, itemsPerPack, numExtraUnits, numArticles]);
+
+  // Coût d'achat unitaire calculé
+  const computedUnitPurchasePrice = useMemo(() => {
+    if (isPack) {
+      if (itemsPerPack <= 0) return 0;
+      return Math.round(numPkgPrice / itemsPerPack);
+    }
+    return numArticleUnitPrice;
+  }, [isPack, itemsPerPack, numPkgPrice, numArticleUnitPrice]);
+
+  // Prix de paquet équivalent
+  const computedPackagePurchasePrice = useMemo(() => {
+    if (isPack) {
+      return numPkgPrice;
+    }
+    return numArticleUnitPrice;
+  }, [isPack, numPkgPrice, numArticleUnitPrice]);
+
+  // Coût total de réapprovisionnement
+  const totalCost = useMemo(() => {
+    if (isPack) {
+      const pkgsCost = numPkgs * numPkgPrice;
+      const unitsCost = numExtraUnits * computedUnitPurchasePrice;
+      return pkgsCost + unitsCost;
+    }
+    return numArticles * numArticleUnitPrice;
+  }, [isPack, numPkgs, numPkgPrice, numExtraUnits, computedUnitPurchasePrice, numArticles, numArticleUnitPrice]);
+
+  const newUnitStock = (product.unit_stock || 0) + totalUnitsAdded;
+  const newPackageStock = isPack ? Math.floor(newUnitStock / itemsPerPack) : newUnitStock;
+  const newStockBreakdown = getProductStockBreakdown({
+    ...product,
+    unit_stock: newUnitStock,
+    packaging_type: isPack ? 'pack' : 'article',
+    items_per_pack: itemsPerPack,
+  });
+
+  // Cash register balance check
+  const availableCash = stats?.solde_caisse ?? 0;
+  const isInsufficientCash = totalCost > availableCash;
+  const remainingCash = availableCash - totalCost;
+
+  const willClearAlert = newUnitStock > threshold;
+
+  const handleQuickAdd = (count: number) => {
+    if (isPack) {
+      setPackagesToAdd((prev) => (Number(prev) || 0) + count);
+    } else {
+      setArticlesToAdd((prev) => (Number(prev) || 0) + count);
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMessage(null);
+
+    if (totalUnitsAdded <= 0) {
+      setErrorMessage(
+        isPack
+          ? 'Veuillez ajouter au moins un paquet ou un article au stock.'
+          : 'Veuillez renseigner le nombre d’articles à ajouter.'
+      );
+      return;
+    }
+
+    if (isPack && numPkgPrice <= 0) {
+      setErrorMessage("Le prix d'achat du paquet doit être supérieur à zéro.");
+      return;
+    }
+
+    if (!isPack && numArticleUnitPrice <= 0) {
+      setErrorMessage("Le prix d'achat unitaire de l'article doit être supérieur à zéro.");
+      return;
+    }
+
+    // STRICT BLOCKING: Check cash register balance
+    if (isInsufficientCash) {
+      setErrorMessage(
+        `Solde de caisse insuffisant ! Le réapprovisionnement coûte ${formatCurrency(
+          totalCost
+        )} mais votre caisse ne contient que ${formatCurrency(
+          availableCash
+        )}. Veuillez approvisionner la caisse (injection de fonds ou ventes cash) avant de continuer.`
+      );
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      // 1. Update product stock and purchase prices
+      await updateProduct(product.id, {
+        unit_stock: newUnitStock,
+        package_stock: newPackageStock,
+        package_purchase_price: computedPackagePurchasePrice,
+        unit_purchase_price: computedUnitPurchasePrice,
+      });
+
+      // 2. Automatically deduct total cost from cash register
+      if (totalCost > 0) {
+        const authorName = user ? `${user.first_name} ${user.last_name}` : 'Admin';
+        const descriptionDetail = isPack
+          ? `(+${numPkgs} pqt${numPkgs > 1 ? 's' : ''}${numExtraUnits > 0 ? `, +${numExtraUnits} art.` : ''})`
+          : `(+${numArticles} article${numArticles > 1 ? 's' : ''})`;
+
+        await createWithdrawal({
+          amount: totalCost,
+          reason: `Réapprovisionnement stock : ${product.name} ${descriptionDetail}`,
+          author: authorName,
+        });
+      }
+
+      // 3. Create audit entry
+      createAuditLog(
+        'UPDATE',
+        'product',
+        `Réapprovisionnement de "${product.name}" : +${totalUnitsAdded} articles (${formatCurrency(
+          totalCost
+        )} déduits de la caisse)`,
+        product.id
+      );
+
+      if (onSuccess) onSuccess();
+      onClose();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erreur lors du réapprovisionnement';
+      setErrorMessage(msg);
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 overflow-y-auto">
+      <div className="w-full max-w-lg bg-white rounded-3xl shadow-2xl border border-slate-100 overflow-hidden flex flex-col my-auto">
+        {/* Header */}
+        <div className="p-5 bg-gradient-to-r from-emerald-700 via-teal-800 to-slate-900 text-white flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-white/10 backdrop-blur-md flex items-center justify-center border border-white/20">
+              <PackagePlus className="w-5 h-5 text-emerald-300" />
+            </div>
+            <div>
+              <h3 className="font-black text-base leading-tight">Réapprovisionner le Stock</h3>
+              <p className="text-xs text-emerald-200 font-medium mt-0.5">
+                {isPack ? 'Produit en paquet' : 'Produit vendu à l’article'} • Déduction automatique en caisse
+              </p>
+            </div>
+          </div>
+          <button
+            id="btn-close-restock-modal"
+            type="button"
+            onClick={onClose}
+            className="text-white/70 hover:text-white p-1.5 rounded-xl hover:bg-white/10 transition"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-6 space-y-5">
+          {/* Error Banner */}
+          {errorMessage && (
+            <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-2xl text-xs text-rose-800 flex items-start gap-2.5">
+              <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+              <div className="font-semibold">{errorMessage}</div>
+            </div>
+          )}
+
+          {/* Product Identification & Current Status */}
+          <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl">
+            <div className="flex items-start justify-between">
+              <div>
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                  Fiche Produit
+                </span>
+                <h4 className="text-base font-black text-slate-900">{product.name}</h4>
+                <div className="flex items-center gap-1.5 mt-1">
+                  {isPack ? (
+                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-xl text-[11px] font-black bg-indigo-50 text-indigo-900 border border-indigo-200">
+                      <Boxes className="w-3.5 h-3.5 text-indigo-600" />
+                      <span>Paquet de {itemsPerPack} articles</span>
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-xl text-[11px] font-bold bg-slate-200/80 text-slate-800 border border-slate-300">
+                      <Tag className="w-3.5 h-3.5 text-slate-600" />
+                      <span>Article à l'unité</span>
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="text-right">
+                <span
+                  className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-black uppercase border ${
+                    product.unit_stock <= 0
+                      ? 'bg-rose-100 text-rose-800 border-rose-200'
+                      : product.unit_stock <= threshold
+                      ? 'bg-amber-100 text-amber-900 border-amber-200'
+                      : 'bg-emerald-100 text-emerald-800 border-emerald-200'
+                  }`}
+                >
+                  <AlertTriangle className="w-3 h-3" />
+                  <span>
+                    {product.unit_stock <= 0
+                      ? 'Rupture (0)'
+                      : product.unit_stock <= threshold
+                      ? 'Stock Faible'
+                      : 'Stock Normal'}
+                  </span>
+                </span>
+                <div className="text-xs font-bold text-slate-700 mt-1">
+                  {isPack ? (
+                    <>
+                      Stock : <span className="font-black text-slate-900">{currentBreakdown.formattedShort}</span>
+                      <div className="text-[10px] text-slate-500 font-medium">
+                        Total : {product.unit_stock} articles (seuil : {threshold})
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      Stock : <span className="font-black text-slate-900">{product.unit_stock}</span> / {threshold} seuil
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Quick Presets */}
+          <div>
+            <label className="block text-xs font-bold text-slate-700 mb-2">
+              Raccourcis rapides :
+            </label>
+            <div className="grid grid-cols-4 gap-2">
+              {(isPack ? [1, 2, 5, 10] : [5, 10, 20, 50]).map((num) => (
+                <button
+                  key={num}
+                  type="button"
+                  onClick={() => handleQuickAdd(num)}
+                  className="py-2 px-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 rounded-xl text-xs font-black border border-emerald-200 transition active:scale-95 text-center cursor-pointer"
+                >
+                  +{num} {isPack ? (num > 1 ? 'pqts' : 'pqt') : 'art.'}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Saisie Conditionnelle selon Type de Produit */}
+          {isPack ? (
+            <>
+              {/* Cas PAQUET : Nombre de paquets & Prix du paquet */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Nombre de paquets à ajouter <span className="text-rose-500">*</span>
+                  </label>
+                  <div className="relative">
+                    <input
+                      id="input-restock-packages"
+                      type="number"
+                      min="0"
+                      value={packagesToAdd}
+                      onChange={(e) => setPackagesToAdd(e.target.value === '' ? '' : Number(e.target.value))}
+                      className="w-full p-3 bg-white border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:ring-2 focus:ring-emerald-500"
+                      placeholder="0"
+                      required
+                    />
+                    <span className="absolute right-3 top-3 text-xs font-semibold text-slate-400">
+                      paquet(s)
+                    </span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Prix d'achat du paquet (FCFA) <span className="text-rose-500">*</span>
+                  </label>
+                  <div className="relative">
+                    <input
+                      id="input-restock-package-price"
+                      type="number"
+                      min="0"
+                      value={packagePurchasePrice}
+                      onChange={(e) =>
+                        setPackagePurchasePrice(e.target.value === '' ? '' : Number(e.target.value))
+                      }
+                      className="w-full p-3 bg-white border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:ring-2 focus:ring-emerald-500"
+                      placeholder="Ex: 12000"
+                      required
+                    />
+                    <span className="absolute right-3 top-3 text-xs font-semibold text-slate-400">
+                      FCFA
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    Coût unitaire calculé : <strong>{formatCurrency(computedUnitPurchasePrice)}</strong> / article
+                  </p>
+                </div>
+              </div>
+
+              {/* Articles individuels supplémentaires hors paquet (optionnel) */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Articles individuels supplémentaires hors paquet (optionnel) :
+                </label>
+                <div className="relative">
+                  <input
+                    id="input-restock-extra-units"
+                    type="number"
+                    min="0"
+                    value={extraUnitsToAdd}
+                    onChange={(e) => setExtraUnitsToAdd(e.target.value === '' ? '' : Number(e.target.value))}
+                    className="w-full p-2.5 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-900 focus:ring-2 focus:ring-emerald-500"
+                    placeholder="0"
+                  />
+                  <span className="absolute right-3 top-2.5 text-xs font-semibold text-slate-400">
+                    articles
+                  </span>
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              {/* Cas ARTICLE : Quantité d'articles & Prix d'achat unitaire */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Nombre d'articles à ajouter <span className="text-rose-500">*</span>
+                  </label>
+                  <div className="relative">
+                    <input
+                      id="input-restock-articles"
+                      type="number"
+                      min="0"
+                      value={articlesToAdd}
+                      onChange={(e) => setArticlesToAdd(e.target.value === '' ? '' : Number(e.target.value))}
+                      className="w-full p-3 bg-white border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:ring-2 focus:ring-emerald-500"
+                      placeholder="0"
+                      required
+                    />
+                    <span className="absolute right-3 top-3 text-xs font-semibold text-slate-400">
+                      articles
+                    </span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Prix d'achat unitaire (FCFA) <span className="text-rose-500">*</span>
+                  </label>
+                  <div className="relative">
+                    <input
+                      id="input-restock-unit-price"
+                      type="number"
+                      min="0"
+                      value={unitPurchasePriceInput}
+                      onChange={(e) =>
+                        setUnitPurchasePriceInput(e.target.value === '' ? '' : Number(e.target.value))
+                      }
+                      className="w-full p-3 bg-white border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:ring-2 focus:ring-emerald-500"
+                      placeholder="Ex: 500"
+                      required
+                    />
+                    <span className="absolute right-3 top-3 text-xs font-semibold text-slate-400">
+                      FCFA
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* Vérification du Solde de Caisse (Obligatoire) */}
+          <div
+            className={`p-4 rounded-2xl border transition ${
+              isInsufficientCash
+                ? 'bg-rose-50 border-rose-300'
+                : 'bg-slate-50 border-slate-200'
+            }`}
+          >
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <Wallet className={`w-4 h-4 ${isInsufficientCash ? 'text-rose-600' : 'text-slate-600'}`} />
+                <span className="text-xs font-extrabold text-slate-800">
+                  Contrôle du Solde de Caisse
+                </span>
+              </div>
+              <span
+                className={`text-xs font-black px-2.5 py-0.5 rounded-full ${
+                  isInsufficientCash
+                    ? 'bg-rose-200 text-rose-900'
+                    : 'bg-emerald-100 text-emerald-900'
+                }`}
+              >
+                {formatCurrency(availableCash)} disponible
+              </span>
+            </div>
+
+            <div className="space-y-1.5 text-xs">
+              <div className="flex items-center justify-between text-slate-600">
+                <span>Coût total du réapprovisionnement :</span>
+                <strong className="font-black text-slate-900 text-sm">
+                  {formatCurrency(totalCost)}
+                </strong>
+              </div>
+              <div className="flex items-center justify-between text-slate-600 pt-1 border-t border-slate-200">
+                <span>Solde de caisse restant après achat :</span>
+                <strong
+                  className={`font-black ${
+                    isInsufficientCash ? 'text-rose-600' : 'text-emerald-700'
+                  }`}
+                >
+                  {formatCurrency(remainingCash)}
+                </strong>
+              </div>
+            </div>
+
+            {/* BLOCKING ALERT IF INSUFFICIENT CASH */}
+            {isInsufficientCash && (
+              <div className="mt-3 p-3 bg-rose-100/90 border border-rose-300 rounded-xl text-rose-950 text-xs font-bold flex items-start gap-2">
+                <ShieldAlert className="w-4 h-4 text-rose-700 shrink-0 mt-0.5" />
+                <div>
+                  <span>
+                    Solde insuffisant ! Il vous manque{' '}
+                    <strong>{formatCurrency(totalCost - availableCash)}</strong> en caisse pour régler ce
+                    réapprovisionnement.
+                  </span>
+                  <div className="text-[11px] font-normal text-rose-900 mt-1">
+                    L'opération est bloquée pour préserver la comptabilité de la boutique. Veuillez effectuer une injection de fonds ou réduire les quantités.
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Dynamic Stock Impact Preview */}
+          <div className="p-3.5 bg-emerald-50/60 border border-emerald-200/70 rounded-2xl space-y-2">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-slate-600 font-medium">Quantité totale ajoutée :</span>
+              <strong className="text-emerald-900 font-black text-sm">
+                +{totalUnitsAdded} article{totalUnitsAdded > 1 ? 's' : ''}
+              </strong>
+            </div>
+
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-slate-600 font-medium">Nouveau stock après validation :</span>
+              <div className="flex items-center gap-1.5 font-black text-sm text-slate-900">
+                <span>{product.unit_stock}</span>
+                <ArrowRight className="w-3.5 h-3.5 text-slate-400" />
+                <span className={willClearAlert ? 'text-emerald-700' : 'text-amber-700'}>
+                  {isPack ? (
+                    <>
+                      {newStockBreakdown.formattedShort}{' '}
+                      <span className="text-xs font-medium text-slate-500">
+                        ({newUnitStock} articles au total)
+                      </span>
+                    </>
+                  ) : (
+                    <>{newUnitStock} articles</>
+                  )}
+                </span>
+              </div>
+            </div>
+
+            {willClearAlert ? (
+              <div className="p-2 bg-emerald-100/80 text-emerald-900 rounded-xl text-xs font-bold flex items-center gap-2 mt-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>Le stock dépassera le seuil d'alerte ({threshold} articles). Statut vert garanti.</span>
+              </div>
+            ) : (
+              <div className="p-2 bg-amber-100/80 text-amber-900 rounded-xl text-xs font-bold flex items-center gap-2 mt-2">
+                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                <span>Attention : {newUnitStock} articles reste en dessous ou égal au seuil ({threshold} articles).</span>
+              </div>
+            )}
+          </div>
+
+          {/* Action Buttons */}
+          <div className="flex items-center justify-end gap-3 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition cursor-pointer"
+            >
+              Annuler
+            </button>
+            <button
+              id="btn-confirm-restock"
+              type="submit"
+              disabled={isSubmitting || totalUnitsAdded <= 0 || isInsufficientCash}
+              className={`px-6 py-2.5 text-white font-extrabold text-xs rounded-xl shadow-md transition active:scale-95 flex items-center gap-2 cursor-pointer ${
+                isInsufficientCash
+                  ? 'bg-slate-400 cursor-not-allowed opacity-60'
+                  : 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500'
+              }`}
+            >
+              <Boxes className="w-4 h-4" />
+              <span>
+                {isSubmitting
+                  ? 'Enregistrement & Déduction...'
+                  : isInsufficientCash
+                  ? 'Solde insuffisant (Bloqué)'
+                  : 'Valider & Déduire de la Caisse'}
+              </span>
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+

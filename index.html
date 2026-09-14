@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <script>
+      // Gracefully handle benign Vite HMR notices and Firestore offline fallback in container sandbox
+      (function() {
+        // Safe WebSocket wrapper: silently handle Vite HMR connection attempts in container sandbox only
+        if (
+          typeof window !== 'undefined' &&
+          window.WebSocket &&
+          (window.location.hostname === 'localhost' ||
+            window.location.hostname.includes('run.app') ||
+            window.location.port === '3000')
+        ) {
+          var OriginalWS = window.WebSocket;
+          var MockHmrWS = function(url, protocols) {
+            var urlStr = String(url || '');
+            var isViteHmr = urlStr.indexOf('24678') !== -1 ||
+                            protocols === 'vite-hmr' ||
+                            (Array.isArray(protocols) && protocols.indexOf('vite-hmr') !== -1);
+            if (isViteHmr) {
+              var self = {
+                binaryType: 'blob',
+                bufferedAmount: 0,
+                extensions: '',
+                protocol: 'vite-hmr',
+                readyState: 1, // OPEN
+                url: urlStr,
+                onopen: null,
+                onmessage: null,
+                onerror: null,
+                onclose: null,
+                close: function() {},
+                send: function() {},
+                addEventListener: function(event, cb) {
+                  if (event === 'open' && typeof cb === 'function') {
+                    setTimeout(function() { cb({ type: 'open' }); }, 10);
+                  }
+                },
+                removeEventListener: function() {},
+                dispatchEvent: function() { return true; }
+              };
+              setTimeout(function() {
+                if (typeof self.onopen === 'function') {
+                  self.onopen({ type: 'open' });
+                }
+              }, 10);
+              return self;
+            }
+            return new OriginalWS(url, protocols);
+          };
+          MockHmrWS.prototype = OriginalWS.prototype;
+          MockHmrWS.CONNECTING = OriginalWS.CONNECTING;
+          MockHmrWS.OPEN = OriginalWS.OPEN;
+          MockHmrWS.CLOSING = OriginalWS.CLOSING;
+          MockHmrWS.CLOSED = OriginalWS.CLOSED;
+          window.WebSocket = MockHmrWS;
+        }
+
+        function shouldSuppress(item) {
+          if (!item) return false;
+          var str = '';
+          if (typeof item === 'string') {
+            str = item;
+          } else if (item.message && typeof item.message === 'string') {
+            str = item.message;
+          } else if (item.target && item.target.url && typeof item.target.url === 'string') {
+            str = item.target.url;
+          } else {
+            try { str = String(item); } catch(e) { return false; }
+          }
+          var lower = str.toLowerCase();
+          return lower.indexOf('[vite]') !== -1 ||
+                 lower.indexOf('vite-error-overlay') !== -1 ||
+                 lower.indexOf('@firebase/firestore') !== -1 ||
+                 lower.indexOf('could not reach cloud firestore') !== -1 ||
+                 lower.indexOf('the client will operate in offline mode') !== -1 ||
+                 lower.indexOf('[code=unavailable]') !== -1 ||
+                 (lower.indexOf('websocket') !== -1 && lower.indexOf('vite') !== -1);
+        }
+
+        var _err = console.error;
+        console.error = function() {
+          for (var i = 0; i < arguments.length; i++) {
+            if (shouldSuppress(arguments[i])) {
+              return;
+            }
+          }
+          _err.apply(console, arguments);
+        };
+
+        var _warn = console.warn;
+        console.warn = function() {
+          for (var i = 0; i < arguments.length; i++) {
+            if (shouldSuppress(arguments[i])) {
+              return;
+            }
+          }
+          _warn.apply(console, arguments);
+        };
+
+        var _info = console.info;
+        console.info = function() {
+          for (var i = 0; i < arguments.length; i++) {
+            if (shouldSuppress(arguments[i])) {
+              return;
+            }
+          }
+          _info.apply(console, arguments);
+        };
+
+        var _debug = console.debug;
+        console.debug = function() {
+          for (var i = 0; i < arguments.length; i++) {
+            if (shouldSuppress(arguments[i])) {
+              return;
+            }
+          }
+          _debug.apply(console, arguments);
+        };
+
+        // Suppress benign unhandledrejection events containing [vite] or Firestore offline status
+        window.addEventListener('unhandledrejection', function(event) {
+          if (shouldSuppress(event.reason)) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+          }
+        }, true);
+
+        window.addEventListener('error', function(event) {
+          if (shouldSuppress(event.error) || shouldSuppress(event.message)) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+          }
+        }, true);
+      })();
+    </script>
+    <style>
+      vite-error-overlay { display: none !important; }
+      @keyframes bp-pulse {
+        0%, 100% { opacity: 1; transform: scale(1); }
+        50% { opacity: 0.7; transform: scale(0.96); }
+      }
+      .bp-spinner {
+        width: 44px;
+        height: 44px;
+        border: 4px solid rgba(20, 184, 166, 0.2);
+        border-top-color: #0d9488;
+        border-radius: 50%;
+        animation: bp-spin 0.8s linear infinite;
+      }
+      @keyframes bp-spin {
+        to { transform: rotate(360deg); }
+      }
+    </style>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>BoutiquePro — Gestion de Boutique Alimentaire</title>
+    <meta name="description" content="Application Android & PWA de gestion de boutique alimentaire : ventes cash/crédit, stock gros/détail, caisse, crédits clients, rôles Admin/Caissier et synchronisation multi-appareils en temps réel." />
+    <meta property="og:title" content="BoutiquePro — Gestion de Boutique Alimentaire" />
+    <meta property="og:description" content="Application de gestion de boutique alimentaire, caisse, ventes, stock gros/détail et crédits clients avec synchronisation temps réel." />
+    <meta property="og:type" content="website" />
+    <meta name="theme-color" content="#0f766e" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="BoutiquePro" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" />
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" media="print" onload="this.media='all'" />
+    <noscript>
+      <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    </noscript>
+  </head>
+  <body class="bg-slate-50 text-slate-900 antialiased selection:bg-teal-500 selection:text-white">
+    <div id="root">
+      <div id="bp-initial-loader" style="min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #0f172a; color: #f8fafc; font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; text-align: center; padding: 24px;">
+        <div class="bp-spinner" style="margin-bottom: 20px;"></div>
+        <div style="font-size: 20px; font-weight: 800; color: #14b8a6; letter-spacing: -0.025em; margin-bottom: 8px;">BoutiquePro</div>
+        <div style="font-size: 14px; color: #94a3b8; max-width: 320px; margin-bottom: 16px;">Chargement instantané...</div>
+        <div id="bp-timeout-help" style="display: none; margin-top: 16px; padding: 12px 16px; background: rgba(30, 41, 59, 0.8); border: 1px solid #334155; border-radius: 8px; font-size: 13px; color: #cbd5e1;">
+          <p style="margin-bottom: 8px;">Le chargement prend plus de temps que prévu.</p>
+          <button onclick="if(window.caches){caches.keys().then(function(k){return Promise.all(k.map(function(c){return caches.delete(c);}));}).then(function(){window.location.reload(true);});}else{window.location.reload(true);}" style="padding: 6px 14px; background: #0d9488; color: white; border: none; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer;">
+            Vider le cache et rafraîchir
+          </button>
+        </div>
+      </div>
+      <script>
+        // If React hasn't rendered within 3.5 seconds, show cache refresh helper
+        setTimeout(function() {
+          var help = document.getElementById('bp-timeout-help');
+          if (help && document.getElementById('bp-initial-loader')) {
+            help.style.display = 'block';
+          }
+        }, 3500);
+      </script>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

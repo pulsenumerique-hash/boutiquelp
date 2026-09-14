@@ -1,0 +1,131 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // User profiles: Primary identifier is UID
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated() && (
+        request.auth.uid == userId ||
+        (('uid' in request.resource.data) && request.resource.data.uid == request.auth.uid) ||
+        (('id' in request.resource.data) && request.resource.data.id == request.auth.uid)
+      );
+      allow delete: if isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Boutiques
+    match /boutiques/{boutiqueId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAuthenticated();
+    }
+
+    // Cashiers (Comptes Caissiers de la boutique)
+    match /cashiers/{cashierId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Products (Gros & Détail)
+    match /products/{productId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Sales (Cash & Crédit)
+    match /sales/{saleId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAuthenticated();
+    }
+
+    // Clients & Crédits (Dettes)
+    match /clients/{clientId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Refunds (Remboursements de dettes)
+    match /refunds/{refundId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Cash Movements (Retraits & Injections de caisse)
+    match /cash_movements/{movementId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Cash Closings (Clôtures journalières de caisse)
+    match /cash_closings/{closingId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Audit Logs
+    match /audit_logs/{logId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAuthenticated();
+    }
+
+    // Multi-device active sessions
+    match /active_sessions/{sessionId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Suppliers (Fournisseurs & dettes)
+    match /suppliers/{supplierId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Supplier payments (Paiements fournisseurs & achats)
+    match /supplier_payments/{paymentId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Expenses (Charges d'exploitation)
+    match /expenses/{expenseId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Backups
+    match /backups/{backupId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // App versions
+    match /app_versions/{versionId} {
+      allow read: if true;
+      allow write: if isAuthenticated();
+    }
+
+    // Password resets (Code de réinitialisation à 8 chiffres & validation)
+    match /password_resets/{resetId} {
+      allow create: if true;
+      allow read, update: if true;
+      allow delete: if isAuthenticated();
+    }
+
+    // Trigger Email collection (pour extension Firebase Mail / Netlify)
+    match /mail/{mailId} {
+      allow create: if true;
+      allow read, write: if isAuthenticated();
+    }
+  }
+}

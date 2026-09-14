@@ -1,0 +1,960 @@
+import React, { useState } from 'react';
+import {
+  Users,
+  CreditCard,
+  Plus,
+  Search,
+  Trash2,
+  AlertCircle,
+  Banknote,
+  Receipt,
+  CheckCircle2,
+  Lock,
+  ArrowDownLeft,
+  X,
+  History,
+  Phone,
+  MessageSquare,
+  Send,
+  Copy,
+  Check,
+  ExternalLink,
+} from 'lucide-react';
+import { useApp } from '../../context/AppContext';
+import { useAuth } from '../../context/AuthContext';
+import { Client, Refund } from '../../types';
+import { formatCurrency, formatDate, formatDateShort } from '../../lib/formatters';
+import { ConfirmDeleteModal } from '../Common/ConfirmDeleteModal';
+
+export const CreditManagement: React.FC = () => {
+  const { clients, sales, refunds, boutique, createClient, deleteClient, createRefund, sendClientReminder } = useApp();
+  const { role } = useAuth();
+
+  const [search, setSearch] = useState('');
+  const [filterMode, setFilterMode] = useState<'all' | 'debtors' | 'overdue14'>('all');
+  const [selectedClientDetail, setSelectedClientDetail] = useState<Client | null>(null);
+
+  // Client deletion
+  const [clientToDelete, setClientToDelete] = useState<Client | null>(null);
+  const [isDeletingClient, setIsDeletingClient] = useState(false);
+
+  // New Client Modal
+  const [isClientModalOpen, setIsClientModalOpen] = useState(false);
+  const [newClientName, setNewClientName] = useState('');
+  const [newClientPhone, setNewClientPhone] = useState('');
+  const [newClientNotes, setNewClientNotes] = useState('');
+
+  // Refund Modal
+  const [isRefundModalOpen, setIsRefundModalOpen] = useState(false);
+  const [refundTargetClient, setRefundTargetClient] = useState<Client | null>(null);
+  const [refundAmount, setRefundAmount] = useState<number | ''>('');
+  const [refundNote, setRefundNote] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Reminder Modal
+  const [reminderClient, setReminderClient] = useState<Client | null>(null);
+  const [copiedReminder, setCopiedReminder] = useState(false);
+
+  // Total credit in circulation
+  const totalCreditDebt = clients.reduce((sum, c) => sum + c.credit_balance, 0);
+  const debtorClientsCount = clients.filter((c) => c.credit_balance > 0).length;
+
+  const handleOpenRefund = (client: Client) => {
+    setRefundTargetClient(client);
+    setRefundAmount(client.credit_balance); // prefill with full balance
+    setRefundNote('');
+    setErrorMsg(null);
+    setIsRefundModalOpen(true);
+  };
+
+  const handleSubmitRefund = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!refundTargetClient || !refundAmount || Number(refundAmount) <= 0) {
+      setErrorMsg('Veuillez saisir un montant de remboursement supérieur à 0.');
+      return;
+    }
+
+    if (Number(refundAmount) > refundTargetClient.credit_balance) {
+      setErrorMsg('Le montant du remboursement ne peut pas dépasser la dette totale du client.');
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      await createRefund({
+        client_id: refundTargetClient.id,
+        amount: Number(refundAmount),
+        note: refundNote.trim() || undefined,
+      });
+      setIsRefundModalOpen(false);
+      // Update selected detail if viewing
+      if (selectedClientDetail?.id === refundTargetClient.id) {
+        setSelectedClientDetail((prev) =>
+          prev ? { ...prev, credit_balance: Math.max(0, prev.credit_balance - Number(refundAmount)) } : null
+        );
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erreur remboursement';
+      setErrorMsg(msg);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleCreateClientSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newClientName.trim()) return;
+
+    setIsSubmitting(true);
+    try {
+      await createClient({
+        name: newClientName.trim(),
+        phone: newClientPhone.trim() || undefined,
+        notes: newClientNotes.trim() || undefined,
+      });
+      setIsClientModalOpen(false);
+      setNewClientName('');
+      setNewClientPhone('');
+      setNewClientNotes('');
+    } catch (err) {
+      alert('Erreur lors de la création du client.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleDeleteClient = (client: Client) => {
+    if (client.credit_balance > 0) {
+      alert(
+        `Impossible de supprimer le client "${client.name}" car il a encore une dette impayée de ${formatCurrency(
+          client.credit_balance
+        )}.`
+      );
+      return;
+    }
+    setClientToDelete(client);
+  };
+
+  const handleConfirmDeleteClient = async () => {
+    if (!clientToDelete) return;
+    setIsDeletingClient(true);
+    try {
+      await deleteClient(clientToDelete.id);
+      if (selectedClientDetail?.id === clientToDelete.id) {
+        setSelectedClientDetail(null);
+      }
+      setClientToDelete(null);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erreur lors de la suppression';
+      alert(msg);
+    } finally {
+      setIsDeletingClient(false);
+    }
+  };
+
+  const getClientOverdueInfo = (client: Client) => {
+    if (client.credit_balance <= 0) {
+      return { isOverdue14: false, maxDaysElapsed: 0, oldestUnpaidSale: undefined };
+    }
+    const clientSales = sales.filter(
+      (s) => (s.client_id === client.id || s.client_name === client.name) && s.payment_type === 'credit'
+    );
+    if (clientSales.length === 0) {
+      return { isOverdue14: false, maxDaysElapsed: 0, oldestUnpaidSale: undefined };
+    }
+
+    const now = Date.now();
+    let maxDays = 0;
+    let oldestSale: (typeof sales)[0] | undefined;
+
+    for (const s of clientSales) {
+      const saleTime = new Date(s.date || s.created_at).getTime();
+      const days = Math.floor((now - saleTime) / (1000 * 60 * 60 * 24));
+      if (days > maxDays) {
+        maxDays = days;
+        oldestSale = s;
+      }
+    }
+
+    return {
+      isOverdue14: maxDays >= 14,
+      maxDaysElapsed: maxDays,
+      oldestUnpaidSale: oldestSale,
+    };
+  };
+
+  const overdue14ClientsCount = clients.filter((c) => getClientOverdueInfo(c).isOverdue14).length;
+
+  const filteredClients = clients.filter((c) => {
+    const matchesSearch =
+      c.name.toLowerCase().includes(search.toLowerCase()) ||
+      (c.phone && c.phone.includes(search));
+    let matchesMode = true;
+    if (filterMode === 'debtors') {
+      matchesMode = c.credit_balance > 0;
+    } else if (filterMode === 'overdue14') {
+      matchesMode = getClientOverdueInfo(c).isOverdue14;
+    }
+    return matchesSearch && matchesMode;
+  });
+
+  const getReminderMessage = (client: Client) => {
+    const shopName = boutique?.name || 'BoutiquePro';
+    const overdueInfo = getClientOverdueInfo(client);
+    const dateStr = overdueInfo.oldestUnpaidSale
+      ? new Date(overdueInfo.oldestUnpaidSale.date || overdueInfo.oldestUnpaidSale.created_at).toLocaleDateString('fr-FR')
+      : '';
+    const itemsText = overdueInfo.oldestUnpaidSale
+      ? overdueInfo.oldestUnpaidSale.items.map((i) => `${i.quantity}x ${i.product_name}`).join(', ')
+      : 'achats précédents';
+
+    if (overdueInfo.isOverdue14) {
+      return `Bonjour ${client.name}, nous vous contactons concernant votre achat à crédit du ${dateStr} (${itemsText}) effectué il y a ${overdueInfo.maxDaysElapsed} jours chez ${shopName}.\nLe montant restant dû est de ${formatCurrency(client.credit_balance)}.\nMerci de bien vouloir passer en boutique dès que possible pour régulariser votre compte. Excellente journée !`;
+    }
+
+    return `Bonjour ${client.name}, nous vous rappelons amicalement qu'un solde restant de ${formatCurrency(
+      client.credit_balance
+    )} est actuellement en attente de règlement chez ${shopName}. Merci de passer en boutique dès que possible pour régulariser votre compte. Excellente journée !`;
+  };
+
+  const handleCopyReminder = (text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedReminder(true);
+    setTimeout(() => setCopiedReminder(false), 3000);
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Top Bento Banner Stats */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="bg-rose-950 text-white rounded-3xl p-6 border border-rose-900/60 shadow-sm relative overflow-hidden">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold uppercase tracking-wider text-rose-300">
+              Total Crédits en Cours
+            </span>
+            <div className="w-10 h-10 rounded-2xl bg-rose-900/80 flex items-center justify-center">
+              <CreditCard className="w-5 h-5 text-rose-300" />
+            </div>
+          </div>
+          <div className="text-2xl font-black mt-3 text-white">
+            {formatCurrency(totalCreditDebt)}
+          </div>
+          <div className="text-xs text-rose-200 mt-1 font-medium">
+            Créances à recouvrer ({debtorClientsCount} clients concernés)
+          </div>
+        </div>
+
+        <div className="bg-emerald-950 text-white rounded-3xl p-6 border border-emerald-900/60 shadow-sm relative overflow-hidden">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold uppercase tracking-wider text-emerald-300">
+              Remboursements Encaissés
+            </span>
+            <div className="w-10 h-10 rounded-2xl bg-emerald-900/80 flex items-center justify-center">
+              <Banknote className="w-5 h-5 text-emerald-300" />
+            </div>
+          </div>
+          <div className="text-2xl font-black mt-3 text-white">
+            {formatCurrency(refunds.reduce((sum, r) => sum + r.amount, 0))}
+          </div>
+          <div className="text-xs text-emerald-200 mt-1 font-medium">
+            {refunds.length} opération(s) de remboursement
+          </div>
+        </div>
+
+        <div className="bg-white rounded-3xl p-6 border border-slate-200 shadow-sm flex flex-col justify-between">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
+              Répertoire Clients
+            </span>
+            <div className="w-10 h-10 rounded-2xl bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600">
+              <Users className="w-5 h-5" />
+            </div>
+          </div>
+          <div className="text-2xl font-black text-slate-900 mt-3">
+            {clients.length} fiches
+          </div>
+          <button
+            onClick={() => setIsClientModalOpen(true)}
+            className="mt-2 text-xs font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1.5 transition"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Ajouter un nouveau client</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Main Grid: Client List (Left) & Client Details (Right) */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        {/* Clients Table Bento Box (8 cols) */}
+        <div className="lg:col-span-8 bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="p-5 border-b border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3 bg-slate-50/50">
+            <div className="flex items-center gap-2 w-full sm:w-auto">
+              <div className="relative w-full sm:w-64">
+                <Search className="w-4 h-4 absolute left-4 top-3 text-slate-400" />
+                <input
+                  type="text"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Nom ou tél..."
+                  className="w-full pl-10 pr-3 py-2 text-xs bg-white border border-slate-200 rounded-2xl focus:ring-2 focus:ring-indigo-500 shadow-2xs"
+                />
+              </div>
+
+              {/* Filter Tabs */}
+              <div className="flex items-center gap-1 bg-slate-200/80 p-1 rounded-2xl">
+                <button
+                  type="button"
+                  onClick={() => setFilterMode('all')}
+                  className={`px-3 py-1 rounded-xl text-xs font-bold transition ${
+                    filterMode === 'all'
+                      ? 'bg-white text-slate-900 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Tous ({clients.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFilterMode('debtors')}
+                  className={`px-3 py-1 rounded-xl text-xs font-bold transition ${
+                    filterMode === 'debtors'
+                      ? 'bg-rose-600 text-white shadow-xs'
+                      : 'text-rose-700 hover:text-rose-900'
+                  }`}
+                >
+                  Débiteurs ({debtorClientsCount})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFilterMode('overdue14')}
+                  className={`px-3 py-1 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
+                    filterMode === 'overdue14'
+                      ? 'bg-amber-500 text-white shadow-xs'
+                      : 'text-amber-800 hover:text-amber-950'
+                  }`}
+                >
+                  <span>Relances J+14</span>
+                  {overdue14ClientsCount > 0 && (
+                    <span className="px-1.5 py-0.2 rounded-full text-[10px] font-black bg-rose-600 text-white animate-pulse">
+                      {overdue14ClientsCount}
+                    </span>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            <button
+              onClick={() => setIsClientModalOpen(true)}
+              className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-indigo-600 to-teal-600 hover:from-indigo-500 hover:to-teal-500 text-white font-extrabold text-xs rounded-2xl shadow-sm transition active:scale-95 shrink-0"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Nouveau Client</span>
+            </button>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr className="bg-slate-50/80 border-b border-slate-200/80 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                  <th className="py-3.5 px-5">Client & Contact</th>
+                  <th className="py-3.5 px-4 text-right">Dette Actuelle</th>
+                  <th className="py-3.5 px-4 text-right">Total Acheté</th>
+                  <th className="py-3.5 px-4 text-right">Total Remboursé</th>
+                  <th className="py-3.5 px-4 text-center">Action Encaissement</th>
+                  <th className="py-3.5 px-5 text-right">Suppr.</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {filteredClients.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="py-12 text-center text-slate-400">
+                      <Users className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                      Aucun client trouvé.
+                    </td>
+                  </tr>
+                ) : (
+                  filteredClients.map((client) => {
+                    const hasDebt = client.credit_balance > 0;
+                    const isSelected = selectedClientDetail?.id === client.id;
+
+                    return (
+                      <tr
+                        key={client.id}
+                        onClick={() => setSelectedClientDetail(client)}
+                        className={`cursor-pointer transition ${
+                          isSelected ? 'bg-indigo-50/70' : 'hover:bg-slate-50/70'
+                        }`}
+                      >
+                        <td className="py-3.5 px-5">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-extrabold text-slate-900 text-sm">{client.name}</span>
+                            {getClientOverdueInfo(client).isOverdue14 && (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-100 text-amber-900 border border-amber-300 inline-flex items-center gap-1 shadow-2xs">
+                                ⚠️ Relance J+{getClientOverdueInfo(client).maxDaysElapsed} prête
+                              </span>
+                            )}
+                            {client.reminder_history?.some((r) =>
+                              r.date.startsWith(new Date().toISOString().split('T')[0])
+                            ) && (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 inline-flex items-center gap-1">
+                                ✓ Relancé ajd
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[11px] text-slate-500 flex items-center gap-1 mt-0.5">
+                            {client.phone ? (
+                              <>
+                                <Phone className="w-3 h-3 text-slate-400" />
+                                <span>{client.phone}</span>
+                              </>
+                            ) : (
+                              <span>Pas de téléphone</span>
+                            )}
+                          </div>
+                        </td>
+
+                        <td className="py-3.5 px-4 text-right">
+                          <span
+                            className={`font-black text-xs px-2.5 py-1 rounded-full inline-block border ${
+                              hasDebt
+                                ? 'text-rose-800 bg-rose-50 border-rose-200'
+                                : 'text-emerald-800 bg-emerald-50 border-emerald-200'
+                            }`}
+                          >
+                            {formatCurrency(client.credit_balance)}
+                          </span>
+                        </td>
+
+                        <td className="py-3.5 px-4 text-right font-medium text-slate-600">
+                          {formatCurrency(client.total_credit_purchased)}
+                        </td>
+
+                        <td className="py-3.5 px-4 text-right font-medium text-emerald-700">
+                          {formatCurrency(client.total_repaid)}
+                        </td>
+
+                        <td className="py-3.5 px-4 text-center">
+                          {hasDebt ? (
+                            <div className="flex items-center justify-center gap-1.5">
+                              <button
+                                id={`btn-refund-${client.id}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleOpenRefund(client);
+                                }}
+                                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs transition active:scale-95"
+                              >
+                                Encaisser
+                              </button>
+                              <button
+                                id={`btn-remind-${client.id}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setReminderClient(client);
+                                  setCopiedReminder(false);
+                                }}
+                                className="p-1.5 bg-sky-50 hover:bg-sky-100 text-sky-700 font-bold text-xs rounded-xl border border-sky-200 transition"
+                                title="Envoyer une relance amicale (WhatsApp / SMS)"
+                              >
+                                <Send className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="text-[10px] text-emerald-800 font-bold bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full">
+                              À jour (0 FCFA)
+                            </span>
+                          )}
+                        </td>
+
+                        {/* RÈGLE STRICTE : BOUTON SUPPRESSION ACTIF UNIQUEMENT SI DETTE == 0 */}
+                        <td className="py-3.5 px-5 text-right">
+                          <button
+                            id={`btn-delete-client-${client.id}`}
+                            disabled={hasDebt}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteClient(client);
+                            }}
+                            title={
+                              hasDebt
+                                ? 'Suppression impossible : le client a une dette en cours'
+                                : 'Supprimer la fiche client'
+                            }
+                            className={`p-2 rounded-xl transition ${
+                              hasDebt
+                                ? 'text-slate-300 cursor-not-allowed bg-slate-100'
+                                : 'text-slate-400 hover:text-rose-600 hover:bg-rose-50'
+                            }`}
+                          >
+                            {hasDebt ? <Lock className="w-3.5 h-3.5" /> : <Trash2 className="w-3.5 h-3.5" />}
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Client Detail & Transaction History Bento Card (4 cols) */}
+        <div className="lg:col-span-4 bg-white rounded-3xl border border-slate-200 shadow-sm p-6 space-y-4 sticky top-20">
+          {selectedClientDetail ? (
+            <div>
+              <div className="flex items-center justify-between pb-3.5 border-b border-slate-100">
+                <div>
+                  <h3 className="font-extrabold text-slate-900 text-base">{selectedClientDetail.name}</h3>
+                  <p className="text-xs text-slate-500 font-medium">{selectedClientDetail.phone || 'Aucun numéro'}</p>
+                </div>
+                <span
+                  className={`text-xs font-black px-3 py-1 rounded-full border ${
+                    selectedClientDetail.credit_balance > 0
+                      ? 'bg-rose-50 border-rose-200 text-rose-900'
+                      : 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                  }`}
+                >
+                  Dette : {formatCurrency(selectedClientDetail.credit_balance)}
+                </span>
+              </div>
+
+              {/* Action Buttons */}
+              {selectedClientDetail.credit_balance > 0 && (
+                <button
+                  onClick={() => handleOpenRefund(selectedClientDetail)}
+                  className="mt-3.5 w-full py-3 bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-500 hover:to-teal-600 text-white font-extrabold text-xs rounded-2xl shadow-sm transition flex items-center justify-center gap-2"
+                >
+                  <Banknote className="w-4 h-4" />
+                  <span>Encaisser un Remboursement</span>
+                </button>
+              )}
+
+              {/* History of Sales on Credit for this Client */}
+              <div className="mt-4 space-y-2">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                  <History className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>Historique des achats à crédit</span>
+                </h4>
+                <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
+                  {sales
+                    .filter((s) => s.client_id === selectedClientDetail.id || s.client_name === selectedClientDetail.name)
+                    .map((s) => (
+                      <div key={s.id} className="p-3 bg-slate-50/80 rounded-2xl border border-slate-200/80 text-xs">
+                        <div className="flex justify-between font-bold text-slate-800">
+                          <span>{formatDateShort(s.created_at)}</span>
+                          <span className="text-rose-700 font-extrabold">{formatCurrency(s.total_amount)}</span>
+                        </div>
+                        <div className="text-[11px] text-slate-500 mt-1">
+                          {s.items.map((i) => `${i.quantity}x ${i.product_name}`).join(', ')}
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              </div>
+
+              {/* History of Refunds for this Client */}
+              <div className="mt-4 space-y-2">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                  <Banknote className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Historique des remboursements</span>
+                </h4>
+                <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
+                  {refunds
+                    .filter((r) => r.client_id === selectedClientDetail.id)
+                    .map((r) => (
+                      <div key={r.id} className="p-3 bg-emerald-50/70 rounded-2xl border border-emerald-200 text-xs">
+                        <div className="flex justify-between font-bold text-emerald-950">
+                          <span>{formatDateShort(r.created_at)}</span>
+                          <span className="font-black text-emerald-800">+{formatCurrency(r.amount)}</span>
+                        </div>
+                        <div className="text-[10px] text-emerald-700 mt-0.5">
+                          Encaissé par {r.cashier_name} {r.note ? `• ${r.note}` : ''}
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              </div>
+
+              {/* History of Reminders for this Client */}
+              <div className="mt-4 space-y-2">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <MessageSquare className="w-3.5 h-3.5 text-sky-600" />
+                    <span>Historique des relances ({selectedClientDetail.reminder_history?.length || 0})</span>
+                  </span>
+                </h4>
+                {(!selectedClientDetail.reminder_history || selectedClientDetail.reminder_history.length === 0) ? (
+                  <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200 text-[11px] text-slate-400 text-center font-medium">
+                    Aucune relance envoyée pour le moment
+                  </div>
+                ) : (
+                  <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                    {selectedClientDetail.reminder_history.map((r, idx) => (
+                      <div key={idx} className="p-2.5 bg-sky-50/80 border border-sky-200/80 rounded-xl text-xs flex items-center justify-between">
+                        <div>
+                          <div className="font-bold text-sky-950 flex items-center gap-1.5">
+                            <span>{formatDate(r.date)}</span>
+                            <span className="text-[9px] bg-sky-200 text-sky-800 px-1.5 py-0.2 rounded-md uppercase font-black">
+                              {r.channel}
+                            </span>
+                          </div>
+                          <div className="text-[10px] text-slate-500 mt-0.5">
+                            Par {r.sent_by || 'Admin'}
+                          </div>
+                        </div>
+                        <div className="font-black text-sky-900 text-right">
+                          {formatCurrency(r.amount)}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="text-center py-12 text-slate-400 text-xs">
+              <div className="w-12 h-12 rounded-2xl bg-slate-100 flex items-center justify-center mx-auto mb-2.5">
+                <Users className="w-6 h-6 text-slate-300" />
+              </div>
+              <p className="font-medium">Sélectionnez un client dans le tableau pour consulter son historique et ses remboursements.</p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* MODAL REMBOURSEMENT DE CRÉDIT */}
+      {isRefundModalOpen && refundTargetClient && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-xs p-4">
+          <div className="w-full max-w-md bg-white rounded-3xl shadow-2xl border border-slate-100 overflow-hidden">
+            <div className="p-6 bg-slate-900 text-white flex items-center justify-between border-b border-slate-800">
+              <div>
+                <h3 className="font-black text-lg">Encaisser un Remboursement</h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Client : <strong className="text-white">{refundTargetClient.name}</strong>
+                </p>
+              </div>
+              <button
+                onClick={() => setIsRefundModalOpen(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-xl hover:bg-slate-800 transition"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSubmitRefund} className="p-6 space-y-4">
+              {errorMsg && (
+                <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-2xl text-xs text-rose-800 flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                  <span>{errorMsg}</span>
+                </div>
+              )}
+
+              <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200 text-xs space-y-1.5">
+                <div className="flex justify-between text-slate-600">
+                  <span>Dette totale à payer :</span>
+                  <span className="font-bold text-rose-700">{formatCurrency(refundTargetClient.credit_balance)}</span>
+                </div>
+                <div className="flex justify-between text-slate-600">
+                  <span>Reste dû après versement :</span>
+                  <span className="font-bold text-slate-900">
+                    {formatCurrency(Math.max(0, refundTargetClient.credit_balance - (Number(refundAmount) || 0)))}
+                  </span>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Montant versé par le client (FCFA) *
+                </label>
+                <input
+                  id="input-refund-amount"
+                  type="number"
+                  min="10"
+                  max={refundTargetClient.credit_balance}
+                  required
+                  value={refundAmount}
+                  onChange={(e) => setRefundAmount(e.target.value === '' ? '' : Number(e.target.value))}
+                  placeholder="ex: 5000"
+                  className="w-full p-2.5 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 font-black text-emerald-950"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Note / Référence du paiement (optionnel)
+                </label>
+                <input
+                  type="text"
+                  value={refundNote}
+                  onChange={(e) => setRefundNote(e.target.value)}
+                  placeholder="ex: Espèces reçues en main propre"
+                  className="w-full p-2.5 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+
+              <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-3 -mx-6 -mb-6 mt-6">
+                <button
+                  type="button"
+                  onClick={() => setIsRefundModalOpen(false)}
+                  className="px-4 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-bold rounded-xl transition"
+                >
+                  Annuler
+                </button>
+                <button
+                  id="btn-confirm-refund"
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="px-6 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-500 hover:to-teal-600 text-white font-extrabold text-xs rounded-xl shadow-md transition active:scale-95 disabled:opacity-70"
+                >
+                  {isSubmitting ? 'Validation...' : 'Valider le Remboursement'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL CRÉATION CLIENT */}
+      {isClientModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-xs p-4">
+          <div className="w-full max-w-md bg-white rounded-3xl shadow-2xl border border-slate-100 overflow-hidden">
+            <div className="p-6 bg-slate-900 text-white flex items-center justify-between border-b border-slate-800">
+              <div>
+                <h3 className="font-black text-lg">Nouveau Client</h3>
+                <p className="text-xs text-slate-400 mt-0.5">Créer une fiche client pour les crédits</p>
+              </div>
+              <button
+                onClick={() => setIsClientModalOpen(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-xl hover:bg-slate-800 transition"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateClientSubmit} className="p-6 space-y-3.5">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Nom et Prénom du client *
+                </label>
+                <input
+                  id="input-client-name"
+                  type="text"
+                  required
+                  value={newClientName}
+                  onChange={(e) => setNewClientName(e.target.value)}
+                  placeholder="ex: Seydou Keita"
+                  className="w-full p-2.5 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Téléphone (optionnel)
+                </label>
+                <input
+                  type="tel"
+                  value={newClientPhone}
+                  onChange={(e) => setNewClientPhone(e.target.value)}
+                  placeholder="ex: +223 70 12 34 56"
+                  className="w-full p-2.5 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Notes / Localisation (optionnel)
+                </label>
+                <textarea
+                  rows={2}
+                  value={newClientNotes}
+                  onChange={(e) => setNewClientNotes(e.target.value)}
+                  placeholder="ex: Habite en face de la mosquée, client régulier"
+                  className="w-full p-2.5 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+
+              <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-3 -mx-6 -mb-6 mt-6">
+                <button
+                  type="button"
+                  onClick={() => setIsClientModalOpen(false)}
+                  className="px-4 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-bold rounded-xl transition"
+                >
+                  Annuler
+                </button>
+                <button
+                  id="btn-submit-create-client"
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="px-6 py-2.5 bg-gradient-to-r from-indigo-600 to-teal-600 hover:from-indigo-500 hover:to-teal-500 text-white font-extrabold text-xs rounded-xl shadow-md transition active:scale-95 disabled:opacity-70"
+                >
+                  {isSubmitting ? 'Création...' : 'Créer la fiche client'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL RELANCE CLIENT AMICALE */}
+      {reminderClient && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-100 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-sky-50 text-sky-700 flex items-center justify-center">
+                  <MessageSquare className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-black text-sm text-slate-900">Relance Créance Client</h3>
+                  <p className="text-[11px] text-slate-500">Rappel amical et personnalisé</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setReminderClient(null)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200 text-xs space-y-1">
+              <div className="flex justify-between font-bold text-slate-900">
+                <span>Client :</span>
+                <span>{reminderClient.name}</span>
+              </div>
+              <div className="flex justify-between text-slate-600">
+                <span>Téléphone :</span>
+                <span>{reminderClient.phone || 'Non renseigné'}</span>
+              </div>
+              <div className="flex justify-between font-black text-rose-700 pt-1 border-t border-slate-200">
+                <span>Solde à régulariser :</span>
+                <span>{formatCurrency(reminderClient.credit_balance)}</span>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                Message généré :
+              </label>
+              <div className="p-3.5 bg-sky-50/60 border border-sky-200 rounded-2xl text-xs text-sky-950 font-medium leading-relaxed">
+                {getReminderMessage(reminderClient)}
+              </div>
+            </div>
+
+            {(() => {
+              const todayStr = new Date().toISOString().split('T')[0];
+              const alreadySentToday = (reminderClient.reminder_history || []).some((r) =>
+                r.date.startsWith(todayStr)
+              );
+              return (
+                <>
+                  {alreadySentToday && (
+                    <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-[11px] text-amber-900 flex items-center gap-1.5 font-bold">
+                      <span>⚠️ Une relance a déjà été transmise aujourd'hui à ce client.</span>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-2 gap-2 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => handleCopyReminder(getReminderMessage(reminderClient))}
+                      className="flex items-center justify-center gap-1.5 py-2.5 px-3 bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold rounded-xl transition"
+                    >
+                      {copiedReminder ? (
+                        <>
+                          <Check className="w-4 h-4 text-emerald-600" />
+                          <span>Copié !</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-4 h-4 text-slate-600" />
+                          <span>Copier texte</span>
+                        </>
+                      )}
+                    </button>
+
+                    {reminderClient.phone ? (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (alreadySentToday) {
+                            const ok = window.confirm(
+                              `Une relance a déjà été envoyée aujourd'hui à ${reminderClient.name}. Souhaitez-vous quand même la renvoyer ?`
+                            );
+                            if (!ok) return;
+                          }
+                          await sendClientReminder(reminderClient);
+                          setReminderClient(null);
+                          if (selectedClientDetail?.id === reminderClient.id) {
+                            setSelectedClientDetail((prev) =>
+                              prev
+                                ? {
+                                    ...prev,
+                                    last_reminder_date: new Date().toISOString(),
+                                    reminder_history: [
+                                      {
+                                        date: new Date().toISOString(),
+                                        amount: reminderClient.credit_balance,
+                                        channel: 'whatsapp',
+                                        sent_by: 'Admin / Caissier',
+                                      },
+                                      ...(prev.reminder_history || []),
+                                    ],
+                                  }
+                                : null
+                            );
+                          }
+                        }}
+                        className="flex items-center justify-center gap-1.5 py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-xs transition active:scale-95"
+                      >
+                        <Send className="w-4 h-4" />
+                        <span>{alreadySentToday ? 'Renvoyer (WhatsApp)' : 'Envoyer (WhatsApp)'}</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled
+                        className="flex items-center justify-center gap-1.5 py-2.5 px-3 bg-slate-100 text-slate-400 text-xs font-bold rounded-xl cursor-not-allowed"
+                      >
+                        <span>Pas de tél</span>
+                      </button>
+                    )}
+                  </div>
+                </>
+              );
+            })()}
+
+            {reminderClient.phone && (
+              <div className="text-center">
+                <a
+                  href={`sms:${reminderClient.phone}?body=${encodeURIComponent(
+                    getReminderMessage(reminderClient)
+                  )}`}
+                  className="text-[11px] font-bold text-slate-500 hover:text-indigo-600 inline-flex items-center gap-1"
+                >
+                  <span>Ou envoyer par SMS standard</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DE CONFIRMATION DE SUPPRESSION CLIENT */}
+      <ConfirmDeleteModal
+        isOpen={!!clientToDelete}
+        title="Supprimer la fiche client"
+        itemTitle={clientToDelete?.name || ''}
+        itemSubtitle={clientToDelete?.phone ? `Téléphone : ${clientToDelete.phone}` : undefined}
+        message="Voulez-vous vraiment supprimer cet élément ? Cette action est irréversible."
+        confirmText="Supprimer"
+        cancelText="Annuler"
+        isLoading={isDeletingClient}
+        onConfirm={handleConfirmDeleteClient}
+        onCancel={() => setClientToDelete(null)}
+      />
+    </div>
+  );
+};
