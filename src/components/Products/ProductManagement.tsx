@@ -99,7 +99,7 @@ export const ProductManagement: React.FC = () => {
   };
 
   const isPack = packagingType === 'pack';
-  const effectiveItemsPerPack = isPack ? Math.max(2, Math.floor(Number(itemsPerPack) || 2)) : 1;
+  const effectiveItemsPerPack = isPack ? Math.max(1, Math.floor(Number(itemsPerPack) || 1)) : 1;
 
   // Calcul automatique du prix d'achat unitaire
   const computedUnitPurchasePrice = useMemo(() => {
@@ -126,13 +126,12 @@ export const ProductManagement: React.FC = () => {
   // Total d'articles calculé automatiquement pour le stock
   const computedTotalStockArticles = useMemo(() => {
     if (packagingType === 'article') {
-      return Number(unitStock) || 0;
+      return Math.max(0, Math.floor(Number(unitStock) || 0));
     }
-    const pkgs = Number(packageStock) || 0;
-    const extra = Number(extraArticles) || 0;
-    const items = Number(itemsPerPack) || 1;
-    return pkgs * items + extra;
-  }, [packagingType, unitStock, packageStock, extraArticles, itemsPerPack]);
+    const pkgs = Math.max(0, Math.floor(Number(packageStock) || 0));
+    const items = Math.max(0, Math.floor(Number(itemsPerPack) || 0));
+    return pkgs * items;
+  }, [packagingType, unitStock, packageStock, itemsPerPack]);
 
   // Handle open modal for create
   const handleOpenCreate = () => {
@@ -190,9 +189,9 @@ export const ProductManagement: React.FC = () => {
     setIsSubmitting(true);
     try {
       const isPackSelected = packagingType === 'pack';
-      const itemsPerPackNumber = isPackSelected ? Math.max(2, Math.floor(Number(itemsPerPack) || 2)) : 1;
+      const itemsPerPackNumber = isPackSelected ? Math.max(1, Math.floor(Number(itemsPerPack) || 1)) : 1;
       const totalArticles = computedTotalStockArticles;
-      const fullPacks = isPackSelected ? Math.floor(totalArticles / itemsPerPackNumber) : totalArticles;
+      const numPacks = isPackSelected ? Math.max(0, Math.floor(Number(packageStock) || 0)) : totalArticles;
 
       const payload: Partial<Product> = {
         name: name.trim(),
@@ -205,7 +204,7 @@ export const ProductManagement: React.FC = () => {
         unit_purchase_price: computedUnitPurchasePrice,
         unit_sale_price: Number(unitSalePrice) || 0,
         pack_sale_price: isPackSelected && packSalePrice !== '' ? Number(packSalePrice) : (isPackSelected ? (Number(unitSalePrice) || 0) * itemsPerPackNumber : undefined),
-        package_stock: fullPacks,
+        package_stock: numPacks,
         unit_stock: totalArticles,
         min_alert_threshold: Number(minAlertThreshold) || 10,
         barcode: barcode.trim() || undefined,
@@ -239,13 +238,33 @@ export const ProductManagement: React.FC = () => {
     }
 
     if (packagingType === 'pack') {
+      if (packageStock === '' || packageStock === null || packageStock === undefined) {
+        setFormError('Le champ « Nombre de paquets » est obligatoire.');
+        return;
+      }
+      const numPacks = Number(packageStock);
+      if (isNaN(numPacks) || numPacks < 0 || !Number.isInteger(numPacks)) {
+        setFormError('Le champ « Nombre de paquets » doit être un nombre entier positif.');
+        return;
+      }
+
       if (itemsPerPack === '' || itemsPerPack === null || itemsPerPack === undefined) {
-        setFormError('Indiquez le nombre d’articles contenus dans ce paquet.');
+        setFormError('Le champ « Nombre d’articles par paquet » est obligatoire.');
         return;
       }
       const numItems = Number(itemsPerPack);
-      if (isNaN(numItems) || numItems < 2 || !Number.isInteger(numItems)) {
-        setFormError('Le nombre d’articles par paquet doit être un nombre entier supérieur ou égal à 2.');
+      if (isNaN(numItems) || numItems < 1 || !Number.isInteger(numItems)) {
+        setFormError('Le champ « Nombre d’articles par paquet » doit être un nombre entier supérieur ou égal à 1.');
+        return;
+      }
+    } else {
+      if (unitStock === '' || unitStock === null || unitStock === undefined) {
+        setFormError('Le champ « Stock initial » est obligatoire.');
+        return;
+      }
+      const numUnitStock = Number(unitStock);
+      if (isNaN(numUnitStock) || numUnitStock < 0 || !Number.isInteger(numUnitStock)) {
+        setFormError('Le stock initial en articles doit être un nombre entier positif.');
         return;
       }
     }
@@ -955,13 +974,19 @@ export const ProductManagement: React.FC = () => {
                 </div>
               </div>
 
-              {/* 2. CHOIX DU TYPE DE CONDITIONNEMENT : ARTICLE vs PAQUET */}
+              {/* 2. MODE DE CONDITIONNEMENT : PAR ARTICLE vs PAR PAQUET */}
               <div className="space-y-3">
-                <label className="block text-xs font-bold text-slate-800 uppercase tracking-wider">
-                  Type de conditionnement *
-                </label>
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-black text-slate-800 uppercase tracking-wider">
+                    Mode de conditionnement *
+                  </label>
+                  <span className="text-[11px] text-slate-500 font-medium">
+                    {packagingType === 'pack' ? 'Conditionnement par paquet' : 'Conditionnement par article'}
+                  </span>
+                </div>
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {/* Option Article */}
+                  {/* Option Par article */}
                   <button
                     type="button"
                     id="btn-select-packaging-article"
@@ -969,78 +994,234 @@ export const ProductManagement: React.FC = () => {
                       setPackagingType('article');
                       setPackageType('Article');
                     }}
-                    className={`p-4 rounded-2xl border-2 text-left transition flex items-start gap-3.5 cursor-pointer active:scale-[0.98] ${
+                    className={`p-3.5 sm:p-4 rounded-2xl border-2 text-left transition flex items-start gap-3 cursor-pointer active:scale-[0.98] ${
                       packagingType === 'article'
-                        ? 'border-indigo-600 bg-indigo-50/70 shadow-sm ring-2 ring-indigo-600/20'
-                        : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50/50'
+                        ? 'border-indigo-600 bg-indigo-50/80 shadow-xs ring-2 ring-indigo-600/20'
+                        : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50/60'
                     }`}
                   >
                     <div
-                      className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                      className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 transition ${
                         packagingType === 'article'
-                          ? 'bg-indigo-600 text-white shadow-xs'
-                          : 'bg-slate-100 text-slate-600'
+                          ? 'border-indigo-600 bg-indigo-600 text-white'
+                          : 'border-slate-400 bg-white'
                       }`}
                     >
-                      <Tag className="w-5 h-5" />
+                      {packagingType === 'article' && (
+                        <div className="w-2 h-2 rounded-full bg-white" />
+                      )}
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between">
-                        <span className="font-black text-sm text-slate-900">Article</span>
-                        {packagingType === 'article' && (
-                          <CheckCircle2 className="w-4 h-4 text-indigo-600 shrink-0" />
-                        )}
+                        <span className="font-black text-sm text-slate-900">◉ Par article</span>
+                        <Tag className={`w-4 h-4 shrink-0 ${packagingType === 'article' ? 'text-indigo-600' : 'text-slate-400'}`} />
                       </div>
                       <p className="text-[11px] text-slate-500 mt-0.5 leading-snug">
-                        Produit stocké et vendu <strong>à l’unité</strong> (ex : Coca-Cola 50 cl, savon, pain).
+                        Produit stocké et vendu <strong>à l’unité</strong> (ex : canette, savon, pain).
                       </p>
                     </div>
                   </button>
 
-                  {/* Option Paquet */}
+                  {/* Option Par paquet */}
                   <button
                     type="button"
                     id="btn-select-packaging-pack"
                     onClick={() => {
                       setPackagingType('pack');
                       setPackageType('Paquet');
-                      if (!itemsPerPack || Number(itemsPerPack) < 2) {
+                      if (packageStock === '' || Number(packageStock) <= 0) {
+                        setPackageStock(10);
+                      }
+                      if (!itemsPerPack || Number(itemsPerPack) < 1) {
                         setItemsPerPack(12);
                       }
                     }}
-                    className={`p-4 rounded-2xl border-2 text-left transition flex items-start gap-3.5 cursor-pointer active:scale-[0.98] ${
+                    className={`p-3.5 sm:p-4 rounded-2xl border-2 text-left transition flex items-start gap-3 cursor-pointer active:scale-[0.98] ${
                       packagingType === 'pack'
-                        ? 'border-indigo-600 bg-indigo-50/70 shadow-sm ring-2 ring-indigo-600/20'
-                        : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50/50'
+                        ? 'border-indigo-600 bg-indigo-50/80 shadow-xs ring-2 ring-indigo-600/20'
+                        : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50/60'
                     }`}
                   >
                     <div
-                      className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                      className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 transition ${
                         packagingType === 'pack'
-                          ? 'bg-indigo-600 text-white shadow-xs'
-                          : 'bg-slate-100 text-slate-600'
+                          ? 'border-indigo-600 bg-indigo-600 text-white'
+                          : 'border-slate-400 bg-white'
                       }`}
                     >
-                      <Boxes className="w-5 h-5" />
+                      {packagingType === 'pack' && (
+                        <div className="w-2 h-2 rounded-full bg-white" />
+                      )}
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between">
-                        <span className="font-black text-sm text-slate-900">Paquet</span>
-                        {packagingType === 'pack' && (
-                          <CheckCircle2 className="w-4 h-4 text-indigo-600 shrink-0" />
-                        )}
+                        <span className="font-black text-sm text-slate-900">◉ Par paquet</span>
+                        <Boxes className={`w-4 h-4 shrink-0 ${packagingType === 'pack' ? 'text-indigo-600' : 'text-slate-400'}`} />
                       </div>
                       <p className="text-[11px] text-slate-500 mt-0.5 leading-snug">
-                        Stocké ou acheté en <strong>paquet contenant X articles</strong> (ex : Biscuit X, casier, pack d'eau).
+                        Stocké ou acheté en <strong>paquet contenant plusieurs articles</strong> (ex : paquet de biscuits, carton, casier).
                       </p>
                     </div>
                   </button>
                 </div>
               </div>
 
-              {/* 3. CHAMPS SELON LE CONDITIONNEMENT */}
-              {packagingType === 'article' ? (
-                /* CAS ARTICLE : Vente et Stockage à l'unité */
+              {/* 3. CHAMPS DYNAMIQUES SELON LE MODE DE CONDITIONNEMENT */}
+              {packagingType === 'pack' ? (
+                /* CAS PAR PAQUET : Champs spécifiques au paquet */
+                <div className="p-4 bg-indigo-50/70 border-2 border-indigo-200 rounded-2xl space-y-4">
+                  <div className="flex items-center gap-2 text-xs font-black text-indigo-950 uppercase tracking-wider">
+                    <Boxes className="w-4 h-4 text-indigo-600" />
+                    <span>Configuration spécifique au conditionnement par paquet</span>
+                  </div>
+
+                  {/* 1. Nombre de paquets & 2. Nombre d’articles par paquet */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                    {/* Champ 1 : Nombre de paquets */}
+                    <div className="bg-white p-3.5 rounded-xl border border-indigo-200 shadow-2xs">
+                      <label htmlFor="input-package-stock" className="block text-xs font-black text-slate-900 mb-1">
+                        Nombre de paquets *
+                      </label>
+                      <input
+                        id="input-package-stock"
+                        type="number"
+                        min="0"
+                        step="1"
+                        required
+                        value={packageStock}
+                        onKeyDown={(e) => {
+                          if (['.', ',', 'e', 'E', '-'].includes(e.key)) e.preventDefault();
+                        }}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (val === '') {
+                            setPackageStock('');
+                          } else {
+                            const parsed = parseInt(val, 10);
+                            if (!isNaN(parsed) && parsed >= 0) setPackageStock(parsed);
+                          }
+                        }}
+                        placeholder="ex: 10"
+                        className="w-full p-2.5 text-sm font-black text-indigo-950 border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 bg-slate-50/50"
+                      />
+                      <p className="text-[11px] text-slate-500 mt-1.5 font-medium leading-tight">
+                        Correspond au nombre de paquets actuellement disponibles en stock.
+                      </p>
+                    </div>
+
+                    {/* Champ 2 : Nombre d’articles par paquet */}
+                    <div className="bg-white p-3.5 rounded-xl border border-indigo-200 shadow-2xs">
+                      <label htmlFor="input-items-per-pack" className="block text-xs font-black text-slate-900 mb-1">
+                        Nombre d’articles par paquet *
+                      </label>
+                      <input
+                        id="input-items-per-pack"
+                        type="number"
+                        min="1"
+                        step="1"
+                        required
+                        value={itemsPerPack}
+                        onKeyDown={(e) => {
+                          if (['.', ',', 'e', 'E', '-'].includes(e.key)) e.preventDefault();
+                        }}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (val === '') {
+                            setItemsPerPack('');
+                          } else {
+                            const parsed = parseInt(val, 10);
+                            if (!isNaN(parsed) && parsed >= 1) setItemsPerPack(parsed);
+                          }
+                        }}
+                        placeholder="ex: 12"
+                        className="w-full p-2.5 text-sm font-black text-indigo-950 border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 bg-slate-50/50"
+                      />
+                      <p className="text-[11px] text-slate-500 mt-1.5 font-medium leading-tight">
+                        Demander combien d’articles sont contenus dans un paquet.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* CALCUL AUTOMATIQUE DU STOCK TOTAL */}
+                  <div className="p-4 bg-white rounded-xl border-2 border-indigo-300 flex items-start sm:items-center gap-3.5 shadow-xs">
+                    <div className="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center font-black text-lg shrink-0 shadow-xs mt-0.5 sm:mt-0">
+                      =
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[10px] font-black uppercase tracking-wider text-indigo-700">
+                        Calcul automatique du stock total :
+                      </div>
+                      <div className="text-base sm:text-lg font-black text-slate-900 mt-0.5">
+                        {packageStock === '' ? 0 : packageStock} paquets × {itemsPerPack === '' ? 0 : itemsPerPack} articles ={' '}
+                        <span className="text-indigo-600 underline decoration-indigo-300">
+                          {computedTotalStockArticles} articles au total.
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 mt-0.5 font-medium">
+                        Le commerçant peut vendre soit par paquet entier, soit à l’article unitaire au comptoir.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* PRIX D'ACHAT ET DE VENTE DU PAQUET */}
+                  <div className="pt-2 border-t border-indigo-100 space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 mb-1">
+                          Prix d’achat du paquet complet (FCFA)
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={packagePurchasePrice}
+                          onChange={(e) => setPackagePurchasePrice(e.target.value === '' ? '' : Number(e.target.value))}
+                          placeholder="ex: 10000"
+                          className="w-full p-2.5 text-xs border border-slate-300 rounded-xl bg-white focus:ring-2 focus:ring-indigo-500"
+                        />
+                        <p className="text-[10px] text-slate-500 mt-1 font-medium">
+                          Prix d'achat unitaire calculé : <strong>{formatCurrency(computedUnitPurchasePrice)}</strong> / article.
+                        </p>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 mb-1">
+                          Prix de vente par article individuel (FCFA) *
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          required
+                          value={unitSalePrice}
+                          onChange={(e) => setUnitSalePrice(e.target.value === '' ? '' : Number(e.target.value))}
+                          placeholder="ex: 100"
+                          className="w-full p-2.5 text-xs border border-slate-300 rounded-xl bg-emerald-50/50 font-black text-slate-900 focus:ring-2 focus:ring-indigo-500"
+                        />
+                        <p className="text-[10px] text-slate-500 mt-1 font-medium">
+                          Marge brute : <strong className={unitMargin >= 0 ? 'text-emerald-700' : 'text-rose-700'}>+{formatCurrency(unitMargin)} ({unitMarginPercent}%)</strong>.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">
+                        Prix de vente du paquet complet (FCFA, optionnel)
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        value={packSalePrice}
+                        onChange={(e) => setPackSalePrice(e.target.value === '' ? '' : Number(e.target.value))}
+                        placeholder={`ex: ${(Number(unitSalePrice) || 0) * effectiveItemsPerPack}`}
+                        className="w-full p-2.5 text-xs border border-slate-300 rounded-xl bg-white font-extrabold text-indigo-950 focus:ring-2 focus:ring-indigo-500"
+                      />
+                      <p className="text-[10px] text-slate-500 mt-1 font-medium">
+                        Si laissé vide : calcul automatique ({effectiveItemsPerPack} × {formatCurrency(Number(unitSalePrice) || 0)} = {formatCurrency(effectiveItemsPerPack * (Number(unitSalePrice) || 0))}).
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                /* CAS PAR ARTICLE : Vente et Stockage à l'unité (les champs paquets disparaissent complètement) */
                 <div className="p-4 bg-slate-50/80 border border-slate-200 rounded-2xl space-y-3.5">
                   <div className="flex items-center gap-2 text-xs font-bold text-slate-800 uppercase tracking-wider">
                     <Tag className="w-4 h-4 text-indigo-600" />
@@ -1084,9 +1265,21 @@ export const ProductManagement: React.FC = () => {
                       <input
                         type="number"
                         min="0"
+                        step="1"
                         required
                         value={unitStock}
-                        onChange={(e) => setUnitStock(e.target.value === '' ? '' : Number(e.target.value))}
+                        onKeyDown={(e) => {
+                          if (['.', ',', 'e', 'E', '-'].includes(e.key)) e.preventDefault();
+                        }}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (val === '') {
+                            setUnitStock('');
+                          } else {
+                            const parsed = parseInt(val, 10);
+                            if (!isNaN(parsed) && parsed >= 0) setUnitStock(parsed);
+                          }
+                        }}
                         placeholder="ex: 35"
                         className="w-full p-2.5 text-xs border border-slate-300 rounded-xl bg-white font-extrabold text-indigo-950 focus:ring-2 focus:ring-indigo-500"
                       />
@@ -1099,169 +1292,6 @@ export const ProductManagement: React.FC = () => {
                     <span className={`font-black ${unitMargin >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
                       +{formatCurrency(unitMargin)} / article ({unitMarginPercent}%)
                     </span>
-                  </div>
-                </div>
-              ) : (
-                /* CAS PAQUET : 1 Paquet = X Articles */
-                <div className="p-4 bg-indigo-50/60 border border-indigo-200 rounded-2xl space-y-3.5">
-                  <div className="flex items-center gap-2 text-xs font-bold text-indigo-950 uppercase tracking-wider">
-                    <Boxes className="w-4 h-4 text-indigo-600" />
-                    <span>Configuration du Paquet & Conversion Automatique</span>
-                  </div>
-
-                  {/* Nombre d'articles par paquet (OBLIGATOIRE, entier >= 2) */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-xs font-black text-indigo-950 mb-1">
-                        Nombre d’articles par paquet *
-                      </label>
-                      <input
-                        id="input-items-per-pack"
-                        type="number"
-                        min="2"
-                        step="1"
-                        required
-                        value={itemsPerPack}
-                        onChange={(e) => setItemsPerPack(e.target.value === '' ? '' : Math.floor(Number(e.target.value)))}
-                        placeholder="ex: 12"
-                        className="w-full p-2.5 text-xs border border-indigo-300 rounded-xl bg-white font-black text-indigo-950 focus:ring-2 focus:ring-indigo-500 shadow-2xs"
-                      />
-                      <p className="text-[10px] text-indigo-700 mt-1 font-semibold">
-                        Entier supérieur ou égal à 2 (ex : 12 pour un paquet de 12 biscuits).
-                      </p>
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1">
-                        Prix d’achat du paquet complet (FCFA)
-                      </label>
-                      <input
-                        type="number"
-                        min="0"
-                        value={packagePurchasePrice}
-                        onChange={(e) => setPackagePurchasePrice(e.target.value === '' ? '' : Number(e.target.value))}
-                        placeholder="ex: 10000"
-                        className="w-full p-2.5 text-xs border border-slate-300 rounded-xl bg-white focus:ring-2 focus:ring-indigo-500"
-                      />
-                      <p className="text-[10px] text-slate-500 mt-1 font-medium">
-                        Prix payé au fournisseur pour 1 paquet complet.
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Live Formula Banner */}
-                  <div className="p-3.5 bg-white rounded-xl border border-indigo-200 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
-                    <div>
-                      <div className="text-[11px] text-slate-500 font-medium">
-                        Règle : 1 paquet = <strong>{effectiveItemsPerPack} articles</strong>. Formule : {Number(packagePurchasePrice) || 0} FCFA ÷ {effectiveItemsPerPack} =
-                      </div>
-                      <div className="text-sm font-bold text-slate-800 mt-0.5">
-                        Prix d'Achat Unitaire Calculé : <strong className="text-indigo-900">{formatCurrency(computedUnitPurchasePrice)}</strong> / article
-                      </div>
-                    </div>
-
-                    <div className="text-right">
-                      <div className="text-[11px] text-slate-500 font-medium">Marge brute par article :</div>
-                      <div className={`font-black text-sm mt-0.5 ${unitMargin >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
-                        +{formatCurrency(unitMargin)} ({unitMarginPercent}%)
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Prix de vente détail & paquet */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1">
-                        Prix de Vente par Article individuel (FCFA) *
-                      </label>
-                      <input
-                        type="number"
-                        min="0"
-                        required
-                        value={unitSalePrice}
-                        onChange={(e) => {
-                          const val = e.target.value === '' ? '' : Number(e.target.value);
-                          setUnitSalePrice(val);
-                          if (val !== '' && packSalePrice === '') {
-                            // Suggestion automatique
-                          }
-                        }}
-                        placeholder="ex: 100"
-                        className="w-full p-2.5 text-xs border border-slate-300 rounded-xl bg-emerald-50/50 font-black text-slate-900 focus:ring-2 focus:ring-indigo-500"
-                      />
-                      <p className="text-[10px] text-slate-500 mt-1">
-                        Prix lorsqu'un client achète 1 article seul à la pièce.
-                      </p>
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1">
-                        Prix de Vente du Paquet complet (FCFA)
-                      </label>
-                      <input
-                        type="number"
-                        min="0"
-                        value={packSalePrice}
-                        onChange={(e) => setPackSalePrice(e.target.value === '' ? '' : Number(e.target.value))}
-                        placeholder={`ex: ${(Number(unitSalePrice) || 0) * effectiveItemsPerPack}`}
-                        className="w-full p-2.5 text-xs border border-slate-300 rounded-xl bg-white font-extrabold text-indigo-950 focus:ring-2 focus:ring-indigo-500"
-                      />
-                      <p className="text-[10px] text-slate-500 mt-1 font-medium">
-                        Laisser vide pour calcul auto ({effectiveItemsPerPack} × {formatCurrency(Number(unitSalePrice) || 0)} = {formatCurrency(effectiveItemsPerPack * (Number(unitSalePrice) || 0))}).
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Stock Initial Intelligent */}
-                  <div className="pt-2 border-t border-indigo-100">
-                    <label className="block text-xs font-black text-indigo-950 mb-1.5">
-                      Stock initial
-                    </label>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                          Nombre de paquets complets en stock
-                        </label>
-                        <input
-                          type="number"
-                          min="0"
-                          value={packageStock}
-                          onChange={(e) => setPackageStock(e.target.value === '' ? '' : Number(e.target.value))}
-                          placeholder="ex: 5"
-                          className="w-full p-2.5 text-xs border border-slate-300 rounded-xl bg-white font-bold"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                          Articles individuels hors paquet (optionnel)
-                        </label>
-                        <input
-                          type="number"
-                          min="0"
-                          value={extraArticles}
-                          onChange={(e) => setExtraArticles(e.target.value === '' ? '' : Number(e.target.value))}
-                          placeholder="ex: 0"
-                          className="w-full p-2.5 text-xs border border-slate-300 rounded-xl bg-white font-medium"
-                        />
-                      </div>
-                    </div>
-
-                    {/* Stock total automatique calculé */}
-                    <div className="mt-2.5 p-3 bg-indigo-100/70 border border-indigo-200 rounded-xl flex items-center gap-2.5 text-xs text-indigo-950">
-                      <CheckCircle2 className="w-4 h-4 text-indigo-600 shrink-0" />
-                      <div>
-                        <strong>Calcul automatique du stock :</strong>{' '}
-                        <span>
-                          {Number(packageStock) || 0} paquet(s) × {effectiveItemsPerPack} articles
-                          {Number(extraArticles) > 0 ? ` + ${extraArticles} article(s)` : ''} ={' '}
-                          <strong className="text-indigo-900 underline decoration-indigo-400">
-                            {computedTotalStockArticles} articles au total
-                          </strong>{' '}
-                          disponibles à la vente.
-                        </span>
-                      </div>
-                    </div>
                   </div>
                 </div>
               )}
